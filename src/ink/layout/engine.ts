@@ -1,6 +1,1 @@
-import type { LayoutNode } from './node.js'
-import { createYogaLayoutNode } from './yoga.js'
-
-export function createLayoutNode(): LayoutNode {
-  return createYogaLayoutNode()
-}
+import type { LayoutNode } from './node.ts'import { createYogaLayoutNode } from './yoga.ts'export function createLayoutNode(): LayoutNode {  return createYogaLayoutNode()}
