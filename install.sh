@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # free-code installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/paoloanzn/free-code/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/master-dev0000/clawdcode-multi-llm/main/install.sh | bash
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -12,8 +12,8 @@ BOLD='\033[1m'
 DIM='\033[2m'
 RESET='\033[0m'
 
-REPO="https://github.com/paoloanzn/free-code.git"
-INSTALL_DIR="$HOME/free-code"
+REPO="https://github.com/master-dev0000/clawdcode-multi-llm.git"
+INSTALL_DIR="$HOME/clawdcode-multi-llm"
 BUN_MIN_VERSION="1.3.11"
 
 info()  { printf "${CYAN}[*]${RESET} %s\n" "$*"; }
@@ -25,15 +25,18 @@ header() {
   echo ""
   printf "${BOLD}${CYAN}"
   cat << 'ART'
-   ___                            _
-  / _|_ __ ___  ___        ___ __| | ___
- | |_| '__/ _ \/ _ \_____ / __/ _` |/ _ \
- |  _| | |  __/  __/_____| (_| (_| |  __/
- |_| |_|  \___|\___|      \___\__,_|\___|
+   ___ _                   _               _ 
+  / __| |__ ___ __ ___ _ __| |__ ___  ___ _| |___
+ | (__| / _` \ V  V / _` / _|/ _ \/ _` / -_) | -_)
+  \___|_\__,_|\_/\_/\__,_\__|\___/\__,_\___|_|\__|
+   __  __      _ _  _      _    _    __  __ 
+  |  \/  |  _ | | || |_   | |  | |  |  \/  |
+  | |\/| | | || | |  _|___| |__| |__| |\/| |
+  |_|  |_|  \_,_|_| \_|___|____|____|_|  |_|
 
 ART
   printf "${RESET}"
-  printf "${DIM}  The free build of Claude Code${RESET}\n"
+  printf "${DIM}  The integrated build of Claude Code Multi-LLM${RESET}\n"
   echo ""
 }
 
@@ -120,7 +123,7 @@ install_deps() {
 }
 
 build_binary() {
-  info "Building free-code (all experimental features enabled)..."
+  info "Building clawdcode-multi-llm (all experimental features enabled)..."
   cd "$INSTALL_DIR"
   bun run build:dev:full
   ok "Binary built: $INSTALL_DIR/cli-dev"
