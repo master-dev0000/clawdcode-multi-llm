@@ -146,10 +146,13 @@ link_binary() {
 
   if ! echo "$PATH" | tr ':' '\n' | grep -qx "$link_dir"; then
     warn "$link_dir is not on your PATH"
-    echo ""
-    printf "${YELLOW}  Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):${RESET}\n"
-    printf "${BOLD}    export PATH=\"\$HOME/.local/bin:\$PATH\"${RESET}\n"
-    echo ""
+    
+    local profile_file="$HOME/.bashrc"
+    if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "$SHELL")" = "zsh" ]; then
+      profile_file="$HOME/.zshrc"
+    fi
+    echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$profile_file"
+    ok "Automagicamente adicionado ao $profile_file. Recarregue a sessão depois!"
   fi
 }
 
@@ -170,19 +173,49 @@ setup_custom_provider() {
   read -r setup_custom <&3 || setup_custom="n"
   
   if [[ "$setup_custom" =~ ^[Yy]$ ]]; then
-    printf "${CYAN}  API Key do Provider (ex: sk-or-...): ${RESET}"
-    read -r api_key <&3
-    
-    printf "${CYAN}  Modelo Padrão (pressione Enter apra usar google/gemini-3.1-pro): ${RESET}"
-    read -r model <&3
-    model="${model:-google/gemini-3.1-pro}"
+    while true; do
+      printf "${CYAN}  API Key do Provider (ex: sk-or-...): ${RESET}"
+      read -r api_key <&3
+      
+      printf "${CYAN}  Modelo Padrão (pressione Enter para google/gemini-3.1-pro): ${RESET}"
+      read -r model <&3
+      model="${model:-google/gemini-3.1-pro}"
 
-    printf "${CYAN}  Base URL (pressione Enter para https://openrouter.ai/api/v1): ${RESET}"
-    read -r base_url <&3
-    base_url="${base_url:-https://openrouter.ai/api/v1}"
+      printf "${CYAN}  Base URL (pressione Enter para https://openrouter.ai/api/v1): ${RESET}"
+      read -r base_url <&3
+      base_url="${base_url:-https://openrouter.ai/api/v1}"
+      
+      info "Testando a conexão com $base_url usando o modelo $model..."
+      
+      # Try a simple lightweight request to test if API key and Model works
+      local test_response
+      local http_code
+      test_response=$(curl -s -w "\n%{http_code}" -X POST "$base_url/chat/completions" \
+        -H "Authorization: Bearer $api_key" \
+        -H "Content-Type: application/json" \
+        -d '{"model":"'"$model"'", "messages":[{"role":"user","content":"oi"}], "max_tokens":1}') || true
+      
+      http_code=$(echo "$test_response" | tail -n1)
+      
+      if [ "$http_code" = "200" ]; then
+        ok "Conexão bem sucedida (HTTP 200)!"
+        break
+      else
+        warn "Falha no teste! O servidor retornou HTTP $http_code."
+        local erro=$(echo "$test_response" | sed '$d' | grep -o '"message": *"[^"]*"' | head -1 || true)
+        if [ -n "$erro" ]; then printf "${RED}  Motivo: $erro${RESET}\n"; fi
+        
+        printf "${YELLOW}  Deseja tentar novamente? [Y/n]: ${RESET}"
+        read -r retry_ans <&3 || retry_ans="y"
+        if ! [[ "${retry_ans:-y}" =~ ^[Yy]$ ]]; then
+          warn "Salvando assim mesmo..."
+          break
+        fi
+      fi
+    done
     
     profile_file="$HOME/.bashrc"
-    if [ -n "$ZSH_VERSION" ] || [ "$(basename "$SHELL")" = "zsh" ]; then
+    if [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "$SHELL")" = "zsh" ]; then
       profile_file="$HOME/.zshrc"
     fi
 
