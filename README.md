@@ -147,11 +147,27 @@ free-code
 
 Supports custom deployment IDs as model names.
 
+### Custom OpenAI (OpenRouter, Groq, Together, Local)
+
+Use any endpoint compatible with the OpenAI v1 API format. This integration handles automatic mapping of Anthropic requests/tools into standard `tool_calls`. Supports reasoning models (e.g. Gemini Pro, DeepSeek `<thinking>` traces).
+
+```bash
+export CLAUDE_CODE_USE_CUSTOM_OPENAI=1
+export CUSTOM_OPENAI_BASE_URL="https://openrouter.ai/api/v1"
+export CUSTOM_OPENAI_API_KEY="sk-or-v1-..."
+export CUSTOM_OPENAI_MODEL="google/gemini-3.1-pro"
+# Optional metadata:
+export CUSTOM_OPENAI_HTTP_REFERER="https://my-app.site"
+export CUSTOM_OPENAI_SITE_NAME="FreeClaw"
+free-code
+```
+
 ### Provider Selection Summary
 
 | Provider | Env Variable | Auth Method |
 |---|---|---|
 | Anthropic (default) | -- | `ANTHROPIC_API_KEY` or OAuth |
+| Custom OpenAI (OpenRouter, etc.) | `CLAUDE_CODE_USE_CUSTOM_OPENAI=1` | `CUSTOM_OPENAI_API_KEY` |
 | OpenAI Codex | `CLAUDE_CODE_USE_OPENAI=1` | OAuth via OpenAI |
 | AWS Bedrock | `CLAUDE_CODE_USE_BEDROCK=1` | AWS credentials |
 | Google Vertex AI | `CLAUDE_CODE_USE_VERTEX=1` | `gcloud` ADC |
@@ -176,7 +192,7 @@ curl -fsSL https://bun.sh/install | bash
 
 ```bash
 git clone https://github.com/master-dev0000/clawdcode-multi-llm.git
-cd free-code
+cd clawdcode-multi-llm
 bun build
 ./cli
 ```
