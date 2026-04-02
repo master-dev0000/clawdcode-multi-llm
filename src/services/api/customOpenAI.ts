@@ -1,0 +1,679 @@
+/**
+ * customOpenAI.ts
+ * Fetch adapter para qualquer endpoint compatível com a API OpenAI.
+ * Suporta: OpenRouter, Stepfun, Groq, Together AI, LLMs locais (Ollama), etc.
+ *
+ * INSTALAÇÃO:
+ *   Copie este arquivo para:
+ *   free-code-multi-llm/src/services/api/customOpenAI.ts
+ *
+ * VARIÁVEIS DE AMBIENTE:
+ *   CLAUDE_CODE_USE_CUSTOM_OPENAI=1          Ativa este adapter
+ *   CUSTOM_OPENAI_BASE_URL=https://...       URL base do provider (obrigatório)
+ *   CUSTOM_OPENAI_API_KEY=sk-...             Chave de API do provider
+ *   CUSTOM_OPENAI_MODEL=...                  Nome do modelo (ex: openai/gpt-4o)
+ *   CUSTOM_OPENAI_HTTP_REFERER=https://...   Header HTTP-Referer (OpenRouter exige)
+ *   CUSTOM_OPENAI_SITE_NAME=FreeClaw         Header X-Title (OpenRouter)
+ *   CUSTOM_OPENAI_MAX_TOKENS=8192            Limite de tokens de saída
+ *   CUSTOM_OPENAI_TEMPERATURE=1              Temperature (0-2)
+ *   CUSTOM_OPENAI_EXTRA_HEADERS={}           JSON com headers adicionais
+ */
+
+// ─── Tipos ────────────────────────────────────────────────────────────────────
+
+export interface CustomOpenAIConfig {
+  baseURL: string
+  apiKey: string
+  model: string
+  maxTokens: number
+  temperature: number
+  extraHeaders: Record<string, string>
+}
+
+interface OpenAIMessage {
+  role: "system" | "user" | "assistant" | "tool"
+  content: string | OpenAIContentPart[]
+  tool_call_id?: string
+  name?: string
+}
+
+interface OpenAIContentPart {
+  type: "text" | "image_url"
+  text?: string
+  image_url?: { url: string }
+}
+
+interface OpenAITool {
+  type: "function"
+  function: {
+    name: string
+    description?: string
+    parameters?: unknown
+  }
+}
+
+interface OpenAIToolCall {
+  id: string
+  type: "function"
+  function: { name: string; arguments: string }
+}
+
+interface OpenAIStreamChunk {
+  choices: Array<{
+    delta: {
+      content?: string
+      reasoning_content?: string
+      reasoning?: string
+      tool_calls?: OpenAIToolCall[]
+      role?: string
+    }
+    finish_reason?: string
+    index: number
+  }>
+  usage?: {
+    prompt_tokens: number
+    completion_tokens: number
+    total_tokens: number
+  }
+}
+
+// Tipos Anthropic (o formato que o QueryEngine espera receber de volta)
+interface AnthropicContentBlock {
+  type: "text" | "tool_use"
+  text?: string
+  id?: string
+  name?: string
+  input?: unknown
+}
+
+interface AnthropicMessage {
+  id: string
+  type: "message"
+  role: "assistant"
+  content: AnthropicContentBlock[]
+  model: string
+  stop_reason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | null
+  stop_sequence: string | null
+  usage: { input_tokens: number; output_tokens: number }
+}
+
+// ─── Leitura de configuração ──────────────────────────────────────────────────
+
+export function getCustomOpenAIConfig(): CustomOpenAIConfig {
+  const baseURL = process.env.CUSTOM_OPENAI_BASE_URL
+  if (!baseURL) {
+    throw new Error(
+      "[customOpenAI] CUSTOM_OPENAI_BASE_URL não definida. " +
+        "Configure a URL base do seu provider OpenAI-compatível."
+    )
+  }
+
+  const apiKey = process.env.CUSTOM_OPENAI_API_KEY ?? ""
+  const model =
+    process.env.CUSTOM_OPENAI_MODEL ?? "gpt-4o"
+  const maxTokens = parseInt(process.env.CUSTOM_OPENAI_MAX_TOKENS ?? "8192", 10)
+  const temperature = parseFloat(process.env.CUSTOM_OPENAI_TEMPERATURE ?? "1")
+
+  // Headers adicionais — útil para OpenRouter (HTTP-Referer, X-Title)
+  const extraHeaders: Record<string, string> = {}
+
+  if (process.env.CUSTOM_OPENAI_HTTP_REFERER) {
+    extraHeaders["HTTP-Referer"] = process.env.CUSTOM_OPENAI_HTTP_REFERER
+  }
+  if (process.env.CUSTOM_OPENAI_SITE_NAME) {
+    extraHeaders["X-Title"] = process.env.CUSTOM_OPENAI_SITE_NAME
+  }
+
+  // Headers livres em JSON
+  if (process.env.CUSTOM_OPENAI_EXTRA_HEADERS) {
+    try {
+      const parsed = JSON.parse(process.env.CUSTOM_OPENAI_EXTRA_HEADERS)
+      Object.assign(extraHeaders, parsed)
+    } catch {
+      console.warn("[customOpenAI] CUSTOM_OPENAI_EXTRA_HEADERS não é JSON válido, ignorando.")
+    }
+  }
+
+  return { baseURL, apiKey, model, maxTokens, temperature, extraHeaders }
+}
+
+// ─── Conversão de formato Anthropic → OpenAI ──────────────────────────────────
+
+/**
+ * Converte mensagens no formato do SDK Anthropic para o formato OpenAI.
+ * O QueryEngine monta as mensagens no formato Anthropic, então precisamos
+ * converter antes de enviar para o endpoint OpenAI-compatível.
+ */
+export function convertMessagesToOpenAI(
+  // biome-ignore lint/suspicious/noExplicitAny: formato dinâmico do SDK Anthropic
+  anthropicMessages: any[]
+): OpenAIMessage[] {
+  const result: OpenAIMessage[] = []
+
+  for (const msg of anthropicMessages) {
+    // Mensagem de usuário simples
+    if (msg.role === "user") {
+      if (typeof msg.content === "string") {
+        result.push({ role: "user", content: msg.content })
+        continue
+      }
+
+      // Conteúdo misto (texto + imagens + resultados de tool)
+      if (Array.isArray(msg.content)) {
+        // Separa blocos tool_result de blocos normais
+        const toolResults = msg.content.filter(
+          // biome-ignore lint/suspicious/noExplicitAny: formato dinâmico
+          (b: any) => b.type === "tool_result"
+        )
+        const normalBlocks = msg.content.filter(
+          // biome-ignore lint/suspicious/noExplicitAny: formato dinâmico
+          (b: any) => b.type !== "tool_result"
+        )
+
+        // Blocos normais → uma mensagem user
+        if (normalBlocks.length > 0) {
+          const parts: OpenAIContentPart[] = normalBlocks.map(
+            // biome-ignore lint/suspicious/noExplicitAny: formato dinâmico
+            (b: any) => {
+              if (b.type === "text") return { type: "text" as const, text: b.text }
+              if (b.type === "image") {
+                const src = b.source
+                if (src.type === "base64") {
+                  return {
+                    type: "image_url" as const,
+                    image_url: { url: `data:${src.media_type};base64,${src.data}` },
+                  }
+                }
+                return { type: "image_url" as const, image_url: { url: src.url } }
+              }
+              return { type: "text" as const, text: JSON.stringify(b) }
+            }
+          )
+          result.push({ role: "user", content: parts })
+        }
+
+        // Resultados de tool → mensagem "tool" por bloco
+        for (const tr of toolResults) {
+          const content =
+            typeof tr.content === "string"
+              ? tr.content
+              : Array.isArray(tr.content)
+                ? tr.content
+                    // biome-ignore lint/suspicious/noExplicitAny: formato dinâmico
+                    .filter((b: any) => b.type === "text")
+                    // biome-ignore lint/suspicious/noExplicitAny: formato dinâmico
+                    .map((b: any) => b.text)
+                    .join("\n")
+                : JSON.stringify(tr.content)
+
+          result.push({
+            role: "tool",
+            tool_call_id: tr.tool_use_id,
+            content,
+          })
+        }
+      }
+      continue
+    }
+
+    // Mensagem de assistant
+    if (msg.role === "assistant") {
+      if (typeof msg.content === "string") {
+        result.push({ role: "assistant", content: msg.content })
+        continue
+      }
+
+      if (Array.isArray(msg.content)) {
+        let textContent = ""
+        const toolCalls: OpenAIToolCall[] = []
+
+        // biome-ignore lint/suspicious/noExplicitAny: formato dinâmico
+        for (const block of msg.content as any[]) {
+          if (block.type === "text") {
+            textContent += block.text
+          } else if (block.type === "tool_use") {
+            toolCalls.push({
+              id: block.id,
+              type: "function",
+              function: {
+                name: block.name,
+                arguments:
+                  typeof block.input === "string"
+                    ? block.input
+                    : JSON.stringify(block.input),
+              },
+            })
+          }
+        }
+
+        const assistantMsg: OpenAIMessage & { tool_calls?: OpenAIToolCall[] } = {
+          role: "assistant",
+          content: textContent,
+        }
+        if (toolCalls.length > 0) {
+          assistantMsg.tool_calls = toolCalls
+        }
+        result.push(assistantMsg)
+      }
+      continue
+    }
+  }
+
+  return result
+}
+
+/**
+ * Converte tools do formato Anthropic para o formato OpenAI.
+ */
+export function convertToolsToOpenAI(
+  // biome-ignore lint/suspicious/noExplicitAny: formato dinâmico
+  anthropicTools: any[]
+): OpenAITool[] {
+  return anthropicTools.map((t) => ({
+    type: "function",
+    function: {
+      name: t.name,
+      description: t.description ?? "",
+      parameters: t.input_schema ?? { type: "object", properties: {} },
+    },
+  }))
+}
+
+// ─── Conversão de resposta OpenAI → Anthropic ────────────────────────────────
+
+/**
+ * Converte uma resposta completa (não-streaming) da API OpenAI
+ * para o formato de mensagem Anthropic que o QueryEngine espera.
+ */
+export function convertResponseToAnthropic(
+  // biome-ignore lint/suspicious/noExplicitAny: formato dinâmico
+  openaiResponse: any,
+  model: string
+): AnthropicMessage {
+  const choice = openaiResponse.choices?.[0]
+  const message = choice?.message ?? {}
+  const content: AnthropicContentBlock[] = []
+
+  if (message.content) {
+    content.push({ type: "text", text: message.content })
+  }
+
+  if (message.tool_calls) {
+    for (const tc of message.tool_calls) {
+      let input: unknown
+      try {
+        input = JSON.parse(tc.function.arguments)
+      } catch {
+        input = { _raw: tc.function.arguments }
+      }
+      content.push({
+        type: "tool_use",
+        id: tc.id,
+        name: tc.function.name,
+        input,
+      })
+    }
+  }
+
+  const finishReason = choice?.finish_reason
+  let stopReason: AnthropicMessage["stop_reason"] = "end_turn"
+  if (finishReason === "tool_calls") stopReason = "tool_use"
+  if (finishReason === "length") stopReason = "max_tokens"
+  if (finishReason === "stop") stopReason = "end_turn"
+
+  return {
+    id: openaiResponse.id ?? `custom-${Date.now()}`,
+    type: "message",
+    role: "assistant",
+    content,
+    model,
+    stop_reason: stopReason,
+    stop_sequence: null,
+    usage: {
+      input_tokens: openaiResponse.usage?.prompt_tokens ?? 0,
+      output_tokens: openaiResponse.usage?.completion_tokens ?? 0,
+    },
+  }
+}
+
+// ─── Cliente principal ────────────────────────────────────────────────────────
+
+/**
+ * Faz uma chamada à API OpenAI-compatível e retorna no formato Anthropic.
+ * Esta função substitui o cliente Anthropic SDK quando
+ * CLAUDE_CODE_USE_CUSTOM_OPENAI=1 está definido.
+ */
+export async function createCustomOpenAIMessage(params: {
+  // biome-ignore lint/suspicious/noExplicitAny: formato dinâmico SDK Anthropic
+  messages: any[]
+  // biome-ignore lint/suspicious/noExplicitAny: formato dinâmico SDK Anthropic
+  tools?: any[]
+  system?: string
+  maxTokens?: number
+  temperature?: number
+}): Promise<AnthropicMessage> {
+  const config = getCustomOpenAIConfig()
+
+  const openaiMessages: OpenAIMessage[] = []
+
+  // System prompt → mensagem "system" no OpenAI
+  if (params.system) {
+    openaiMessages.push({ role: "system", content: params.system })
+  }
+
+  openaiMessages.push(...convertMessagesToOpenAI(params.messages))
+
+  const body: Record<string, unknown> = {
+    model: config.model,
+    messages: openaiMessages,
+    max_tokens: params.maxTokens ?? config.maxTokens,
+    temperature: params.temperature ?? config.temperature,
+  }
+
+  if (params.tools && params.tools.length > 0) {
+    body.tools = convertToolsToOpenAI(params.tools)
+    body.tool_choice = "auto"
+  }
+
+  // Normaliza a URL base (remove trailing slash)
+  const baseURL = config.baseURL.replace(/\/$/, "")
+  const url = `${baseURL}/chat/completions`
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...config.extraHeaders,
+  }
+
+  if (config.apiKey) {
+    headers["Authorization"] = `Bearer ${config.apiKey}`
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "(sem corpo)")
+    throw new Error(
+      `[customOpenAI] Erro HTTP ${response.status} em ${url}: ${errorText}`
+    )
+  }
+
+  const data = await response.json()
+  return convertResponseToAnthropic(data, config.model)
+}
+
+/**
+ * Versão streaming — retorna um AsyncIterable de chunks no formato
+ * de eventos SSE do SDK Anthropic (RawMessageStreamEvent).
+ *
+ * O QueryEngine usa stream internamente para exibir tokens em tempo real.
+ */
+export async function* streamCustomOpenAIMessage(params: {
+  // biome-ignore lint/suspicious/noExplicitAny: formato dinâmico SDK Anthropic
+  messages: any[]
+  // biome-ignore lint/suspicious/noExplicitAny: formato dinâmico SDK Anthropic
+  tools?: any[]
+  system?: string
+  maxTokens?: number
+  temperature?: number
+// biome-ignore lint/suspicious/noExplicitAny: eventos SSE Anthropic
+}): AsyncIterable<any> {
+  const config = getCustomOpenAIConfig()
+
+  const openaiMessages: OpenAIMessage[] = []
+  if (params.system) {
+    openaiMessages.push({ role: "system", content: params.system })
+  }
+  openaiMessages.push(...convertMessagesToOpenAI(params.messages))
+
+  const body: Record<string, unknown> = {
+    model: config.model,
+    messages: openaiMessages,
+    max_tokens: params.maxTokens ?? config.maxTokens,
+    temperature: params.temperature ?? config.temperature,
+    stream: true,
+    stream_options: { include_usage: true },
+  }
+
+  if (params.tools && params.tools.length > 0) {
+    body.tools = convertToolsToOpenAI(params.tools)
+    body.tool_choice = "auto"
+  }
+
+  const baseURL = config.baseURL.replace(/\/$/, "")
+  const url = `${baseURL}/chat/completions`
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "text/event-stream",
+    ...config.extraHeaders,
+  }
+
+  if (config.apiKey) {
+    headers["Authorization"] = `Bearer ${config.apiKey}`
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "(sem corpo)")
+    throw new Error(
+      `[customOpenAI] Erro HTTP ${response.status} em ${url}: ${errorText}`
+    )
+  }
+
+  if (!response.body) {
+    throw new Error("[customOpenAI] Resposta sem body — streaming indisponível.")
+  }
+
+  // Emite evento de início de mensagem (formato Anthropic)
+  yield {
+    type: "message_start",
+    message: {
+      id: `custom-${Date.now()}`,
+      type: "message",
+      role: "assistant",
+      content: [],
+      model: config.model,
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  }
+  yield { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+
+  // Estado para tool calls acumulados (podem chegar fragmentados)
+  const toolCallAccumulators: Map<
+    number,
+    { id: string; name: string; arguments: string }
+  > = new Map()
+  let outputTokens = 0
+  let inputTokens = 0
+  let currentTextIndex = 0
+  let inToolCallMode = false
+  let inReasoningMode = false
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      const lines = buffer.split("\n")
+      buffer = lines.pop() ?? ""
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue
+        const data = line.slice(6).trim()
+        if (data === "[DONE]") continue
+
+        let chunk: OpenAIStreamChunk
+        try {
+          chunk = JSON.parse(data)
+        } catch {
+          continue
+        }
+
+        if (chunk.usage) {
+          inputTokens = chunk.usage.prompt_tokens
+          outputTokens = chunk.usage.completion_tokens
+        }
+
+        const choice = chunk.choices?.[0]
+        if (!choice) continue
+
+        const delta = choice.delta as any
+
+        // Reasoning delta (DeepSeek, Gemini Pro via OpenRouter, etc.)
+        const reasoningDelta = delta.reasoning_content ?? delta.reasoning
+        if (reasoningDelta) {
+          if (inToolCallMode) {
+            yield { type: "content_block_stop", index: currentTextIndex }
+            currentTextIndex++
+            yield {
+              type: "content_block_start",
+              index: currentTextIndex,
+              content_block: { type: "text", text: "" },
+            }
+            inToolCallMode = false
+          }
+          if (!inReasoningMode) {
+            inReasoningMode = true
+            yield {
+              type: "content_block_delta",
+              index: currentTextIndex,
+              delta: { type: "text_delta", text: "<thinking>\n" },
+            }
+          }
+          yield {
+            type: "content_block_delta",
+            index: currentTextIndex,
+            delta: { type: "text_delta", text: reasoningDelta },
+          }
+        }
+
+        // Texto delta
+        if (delta.content) {
+          if (inReasoningMode) {
+            inReasoningMode = false
+            yield {
+              type: "content_block_delta",
+              index: currentTextIndex,
+              delta: { type: "text_delta", text: "\n</thinking>\n\n" },
+            }
+          }
+          if (inToolCallMode) {
+            // Volta para texto — fecha blocos de tool e abre novo texto
+            yield { type: "content_block_stop", index: currentTextIndex }
+            currentTextIndex++
+            yield {
+              type: "content_block_start",
+              index: currentTextIndex,
+              content_block: { type: "text", text: "" },
+            }
+            inToolCallMode = false
+          }
+          yield {
+            type: "content_block_delta",
+            index: currentTextIndex,
+            delta: { type: "text_delta", text: delta.content },
+          }
+        }
+
+        // Tool call deltas
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index ?? 0
+
+            if (!toolCallAccumulators.has(idx)) {
+              // Primeiro fragmento deste tool call — inicia bloco
+              inToolCallMode = true
+              yield { type: "content_block_stop", index: currentTextIndex }
+              currentTextIndex++
+              toolCallAccumulators.set(idx, {
+                id: tc.id ?? `call_${idx}`,
+                name: tc.function?.name ?? "",
+                arguments: tc.function?.arguments ?? "",
+              })
+              yield {
+                type: "content_block_start",
+                index: currentTextIndex,
+                content_block: {
+                  type: "tool_use",
+                  id: toolCallAccumulators.get(idx)!.id,
+                  name: toolCallAccumulators.get(idx)!.name,
+                  input: {},
+                },
+              }
+            } else {
+              // Fragmentos subsequentes — acumula nome e argumentos
+              const acc = toolCallAccumulators.get(idx)!
+              if (tc.function?.name) acc.name += tc.function.name
+              if (tc.function?.arguments) acc.arguments += tc.function.arguments
+              // Emite delta de input_json
+              if (tc.function?.arguments) {
+                yield {
+                  type: "content_block_delta",
+                  index: currentTextIndex,
+                  delta: { type: "input_json_delta", partial_json: tc.function.arguments },
+                }
+              }
+            }
+          }
+        }
+
+        // Fim do stream
+        if (choice.finish_reason) {
+          if (inReasoningMode) {
+            inReasoningMode = false
+            yield {
+              type: "content_block_delta",
+              index: currentTextIndex,
+              delta: { type: "text_delta", text: "\n</thinking>\n\n" },
+            }
+          }
+          yield { type: "content_block_stop", index: currentTextIndex }
+
+          let stopReason: string = "end_turn"
+          if (choice.finish_reason === "tool_calls") stopReason = "tool_use"
+          if (choice.finish_reason === "length") stopReason = "max_tokens"
+
+          yield {
+            type: "message_delta",
+            delta: { stop_reason: stopReason, stop_sequence: null },
+            usage: { output_tokens: outputTokens },
+          }
+          yield {
+            type: "message_stop",
+          }
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+// ─── Guard de ativação ────────────────────────────────────────────────────────
+
+/**
+ * Retorna true se o adapter customOpenAI deve ser usado.
+ * Verificado em QueryEngine.ts antes de chamar o cliente Anthropic.
+ */
+export function isCustomOpenAIEnabled(): boolean {
+  return (
+    process.env.CLAUDE_CODE_USE_CUSTOM_OPENAI === "1" &&
+    !!process.env.CUSTOM_OPENAI_BASE_URL
+  )
+}
