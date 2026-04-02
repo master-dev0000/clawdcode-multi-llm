@@ -161,28 +161,28 @@ setup_custom_provider() {
   # Fallback gracefully if not attached to a TTY (like curl | bash script piping without /dev/tty)
   if [ ! -t 0 ]; then
     if [ -c /dev/tty ]; then
-      exec 3</dev/tty
+      
     else
       return 0
     fi
   else
-    exec 3<&0
+    
   fi
 
   printf "${YELLOW}  [Opcional] Deseja habilitar e plugar um Provedor Customizado (OpenRouter, Groq, etc) agora de forma nativa no seu ambiente? [y/N]: ${RESET}"
-  read -r setup_custom <&3 || setup_custom="n"
+  read -r setup_custom </dev/tty || setup_custom="n"
   
   if [[ "$setup_custom" =~ ^[Yy]$ ]]; then
     while true; do
       printf "${CYAN}  API Key do Provider (ex: sk-or-...): ${RESET}"
-      read -r api_key <&3
+      read -r api_key </dev/tty
       
       printf "${CYAN}  Modelo Padrão (pressione Enter para google/gemini-3.1-pro): ${RESET}"
-      read -r model <&3
+      read -r model </dev/tty
       model="${model:-google/gemini-3.1-pro}"
 
       printf "${CYAN}  Base URL (pressione Enter para https://openrouter.ai/api/v1): ${RESET}"
-      read -r base_url <&3
+      read -r base_url </dev/tty
       base_url="${base_url:-https://openrouter.ai/api/v1}"
       
       info "Testando a conexão com $base_url usando o modelo $model..."
@@ -206,7 +206,7 @@ setup_custom_provider() {
         if [ -n "$erro" ]; then printf "${RED}  Motivo: $erro${RESET}\n"; fi
         
         printf "${YELLOW}  Deseja tentar novamente? [Y/n]: ${RESET}"
-        read -r retry_ans <&3 || retry_ans="y"
+        read -r retry_ans </dev/tty || retry_ans="y"
         if ! [[ "${retry_ans:-y}" =~ ^[Yy]$ ]]; then
           warn "Salvando assim mesmo..."
           break
@@ -230,7 +230,7 @@ setup_custom_provider() {
   else
     info "Configuração pulada. Você pode setar as variáveis manualmente depois."
   fi
-  exec 3<&-
+  
 }
 
 # -------------------------------------------------------------------
