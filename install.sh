@@ -25,14 +25,22 @@ header() {
   echo ""
   printf "${BOLD}${CYAN}"
   cat << 'ART'
-   ___ _                   _               _ 
-  / __| |__ ___ __ ___ _ __| |__ ___  ___ _| |___
- | (__| / _` \ V  V / _` / _|/ _ \/ _` / -_) | -_)
-  \___|_\__,_|\_/\_/\__,_\__|\___/\__,_\___|_|\__|
-   __  __      _ _  _      _    _    __  __ 
-  |  \/  |  _ | | || |_   | |  | |  |  \/  |
-  | |\/| | | || | |  _|___| |__| |__| |\/| |
-  |_|  |_|  \_,_|_| \_|___|____|____|_|  |_|
+   █████████  ████                               ███   █████████                ███          
+  ███▒▒▒▒▒███▒▒███                             ▒▒███  ███▒▒▒▒▒███             ▒▒███          
+ ███     ▒▒▒  ▒███   ██████  █████ ███ █████ ███████ ███     ▒▒▒   ██████   ███████   ██████ 
+▒███          ▒███  ▒▒▒▒▒███▒▒███ ▒███▒▒███ ███▒▒███▒███          ███▒▒███ ███▒▒███  ███▒▒███
+▒███          ▒███   ███████ ▒███ ▒███ ▒███▒███ ▒███▒███         ▒███ ▒███▒███ ▒███ ▒███████ 
+▒▒███     ███ ▒███  ███▒▒███ ▒▒███████████ ▒███ ▒███▒▒███     ███▒███ ▒███▒███ ▒███ ▒███▒▒▒  
+ ▒▒█████████  █████▒▒████████ ▒▒████▒████  ▒▒████████▒▒█████████ ▒▒██████ ▒▒████████▒▒██████ 
+  ▒▒▒▒▒▒▒▒▒  ▒▒▒▒▒  ▒▒▒▒▒▒▒▒   ▒▒▒▒ ▒▒▒▒    ▒▒▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒   ▒▒▒▒▒▒   ▒▒▒▒▒▒▒▒  ▒▒▒▒▒▒  
+ ██████   ██████          ████  █████    ███     █████      █████      ██████   ██████       
+▒▒██████ ██████          ▒▒███ ▒▒███    ▒▒▒     ▒▒███      ▒▒███      ▒▒██████ ██████        
+ ▒███▒█████▒███ █████ ████▒███ ███████  ████     ▒███       ▒███       ▒███▒█████▒███        
+ ▒███▒▒███ ▒███▒▒███ ▒███ ▒███▒▒▒███▒  ▒▒███     ▒███       ▒███       ▒███▒▒███ ▒███        
+ ▒███ ▒▒▒  ▒███ ▒███ ▒███ ▒███  ▒███    ▒███     ▒███       ▒███       ▒███ ▒▒▒  ▒███        
+ ▒███      ▒███ ▒███ ▒███ ▒███  ▒███ ███▒███     ▒███      █▒███      █▒███      ▒███        
+ █████     █████▒▒█████████████ ▒▒█████ █████    ███████████████████████████     █████       
+▒▒▒▒▒     ▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒▒▒▒▒   ▒▒▒▒▒ ▒▒▒▒▒    ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒     ▒▒▒▒▒
 
 ART
   printf "${RESET}"
@@ -145,6 +153,53 @@ link_binary() {
   fi
 }
 
+setup_custom_provider() {
+  echo ""
+  # Fallback gracefully if not attached to a TTY (like curl | bash script piping without /dev/tty)
+  if [ ! -t 0 ]; then
+    if [ -c /dev/tty ]; then
+      exec 3</dev/tty
+    else
+      return 0
+    fi
+  else
+    exec 3<&0
+  fi
+
+  printf "${YELLOW}  [Opcional] Deseja habilitar e plugar um Provedor Customizado (OpenRouter, Groq, etc) agora de forma nativa no seu ambiente? [y/N]: ${RESET}"
+  read -r setup_custom <&3 || setup_custom="n"
+  
+  if [[ "$setup_custom" =~ ^[Yy]$ ]]; then
+    printf "${CYAN}  API Key do Provider (ex: sk-or-...): ${RESET}"
+    read -r api_key <&3
+    
+    printf "${CYAN}  Modelo Padrão (pressione Enter apra usar google/gemini-3.1-pro): ${RESET}"
+    read -r model <&3
+    model="${model:-google/gemini-3.1-pro}"
+
+    printf "${CYAN}  Base URL (pressione Enter para https://openrouter.ai/api/v1): ${RESET}"
+    read -r base_url <&3
+    base_url="${base_url:-https://openrouter.ai/api/v1}"
+    
+    profile_file="$HOME/.bashrc"
+    if [ -n "$ZSH_VERSION" ] || [ "$(basename "$SHELL")" = "zsh" ]; then
+      profile_file="$HOME/.zshrc"
+    fi
+
+    echo "" >> "$profile_file"
+    echo "# Custom Provider configuration for clawdcode-multi-llm" >> "$profile_file"
+    echo "export CLAUDE_CODE_USE_CUSTOM_OPENAI=1" >> "$profile_file"
+    echo "export CUSTOM_OPENAI_BASE_URL=\"$base_url\"" >> "$profile_file"
+    echo "export CUSTOM_OPENAI_API_KEY=\"$api_key\"" >> "$profile_file"
+    echo "export CUSTOM_OPENAI_MODEL=\"$model\"" >> "$profile_file"
+    
+    ok "Configurações injetadas no seu profile: $profile_file (recarregue seu terminal e aproveite)!"
+  else
+    info "Configuração pulada. Você pode setar as variáveis manualmente depois."
+  fi
+  exec 3<&-
+}
+
 # -------------------------------------------------------------------
 # Main
 # -------------------------------------------------------------------
@@ -162,19 +217,21 @@ clone_repo
 install_deps
 build_binary
 link_binary
+setup_custom_provider
 
 echo ""
 printf "${GREEN}${BOLD}  Installation complete!${RESET}\n"
 echo ""
 printf "  ${BOLD}Run it:${RESET}\n"
 printf "    ${CYAN}free-code${RESET}                          # interactive REPL\n"
-printf "    ${CYAN}free-code -p \"your prompt\"${RESET}          # one-shot mode\n"
+printf "    ${CYAN}free-code -p \"sua prompt\"${RESET}           # one-shot mode\n"
 echo ""
-printf "  ${BOLD}Set your API key:${RESET}\n"
-printf "    ${CYAN}export ANTHROPIC_API_KEY=\"sk-ant-...\"${RESET}\n"
-echo ""
-printf "  ${BOLD}Or log in with Claude.ai:${RESET}\n"
-printf "    ${CYAN}free-code /login${RESET}\n"
+printf "  ${BOLD}Configuração do Provider Fallback (Manual):${RESET}\n"
+printf "    Para usar a provider customizada sem injetar automaticamente:\n"
+printf "    ${CYAN}export CLAUDE_CODE_USE_CUSTOM_OPENAI=1${RESET}\n"
+printf "    ${CYAN}export CUSTOM_OPENAI_API_KEY=\"sua-chave\"${RESET}\n"
+printf "    ${CYAN}export CUSTOM_OPENAI_BASE_URL=\"https://openrouter.ai/api/v1\"${RESET}\n"
+printf "    ${CYAN}export CUSTOM_OPENAI_MODEL=\"google/gemini-3.1-pro\"${RESET}\n"
 echo ""
 printf "  ${DIM}Source: $INSTALL_DIR${RESET}\n"
 printf "  ${DIM}Binary: $INSTALL_DIR/cli-dev${RESET}\n"
