@@ -1,4 +1,1 @@
-export function restoreFromEntries(
-  _commits: unknown[],
-  _snapshot: unknown,
-): void {}
+export function restoreFromEntries(  _commits: unknown[],  _snapshot: unknown,): void {}

@@ -1,2 +1,1 @@
-// Here to break circular dependency from prompt.ts
-export const BASH_TOOL_NAME = 'Bash'
+// Here to break circular dependency from prompt.tsexport const BASH_TOOL_NAME = 'Bash'
