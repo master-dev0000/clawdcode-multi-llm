@@ -23,7 +23,7 @@ fail()  { printf "${RED}[x]${RESET} %s\n" "$*"; exit 1; }
 
 header() {
   echo ""
-  printf "${BOLD}${CYAN}"
+  printf "${BOLD}${ORANGE}"
   cat << 'ART'
    █████████  ████                               ███   █████████                ███          
   ███▒▒▒▒▒███▒▒███                             ▒▒███  ███▒▒▒▒▒███             ▒▒███          
