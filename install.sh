@@ -158,15 +158,9 @@ link_binary() {
 
 setup_custom_provider() {
   echo ""
-  # Fallback gracefully if not attached to a TTY (like curl | bash script piping without /dev/tty)
-  if [ ! -t 0 ]; then
-    if [ -c /dev/tty ]; then
-      
-    else
-      return 0
-    fi
-  else
-    
+  # Fallback gracefully if not attached to a TTY and /dev/tty is missing
+  if [ ! -t 0 ] && [ ! -c /dev/tty ]; then
+    return 0
   fi
 
   printf "${YELLOW}  [Opcional] Deseja habilitar e plugar um Provedor Customizado (OpenRouter, Groq, etc) agora de forma nativa no seu ambiente? [y/N]: ${RESET}"
